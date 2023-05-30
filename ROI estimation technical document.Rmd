@@ -1,0 +1,142 @@
+---
+title: "Assignment 3: Measuring ROI on Sponsored Search Ads"
+author: "Aakriti Aneja, ID:5790726 ;Maria Moy, ID: 5479516"
+date: "11/20/2022"
+output: pdf_document
+fontsize: 12pt
+geometry: "left=1.3cm, right=1.3cm, top=1.3cm, bottom=1.3cm"
+header-includes:
+   - \usepackage{setspace}
+   - \doublespacing
+---
+
+### Context and Background
+
+Bazaar has data from both sponsored and organic clicks from four platforms  over 12 weeks. The team wants to understand the impact of stopping sponsored search advertising for keywords and determine the ROI analysis for Google. 
+Having the correct ROI allows Bazaar to know how to advertise better.
+
+We will explain why Bob’s calculation is wrong. Then, we will explain what the observation, treatment, and control are for the analysis. Next, we will calculate the first difference estimate using only the treated group (Google) and explain why this isn’t the best method. Finally, we will discuss the assumptions of Difference-in-Differences (DiD) analysis, run a DiD regression, and calculate the ROI. 
+
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# importing libraries and data
+library(dplyr)
+library(plm)
+library(readxl)
+library(readr)
+library(gmodels)
+library(ggplot2, quietly = TRUE)
+library(gridExtra, quietly = TRUE)
+data_ad <- read.csv('did_sponsored_ads.csv')
+data_ad$total = data_ad$avg_spons + data_ad$avg_org 
+```
+
+We have a Panel data here. We use this to create columns for treatment and post period.
+```{r}
+# after column is 1 for weeks 10-12
+data_ad$after = ifelse(data_ad$week > 9, 1,0)
+#google column is if the platform is google
+data_ad$google =ifelse(data_ad$platform == 'goog', 1,0)
+```
+
+We also look at the distribution of sponsored ad clicks, organic clicks and total traffic to check for skewness
+```{r, warning=FALSE, fig.height = 1.5, fig.width=7}
+hist1 <- ggplot(data_ad, aes(x=avg_spons)) + geom_histogram(binwidth=1500)
+hist2 <- ggplot(data_ad, aes(x=avg_org)) + geom_histogram(binwidth=1500)
+hist3 <- ggplot(data_ad, aes(x=total)) + geom_histogram(binwidth=1500)
+grid.arrange(hist1, hist2, hist3, ncol = 3)
+```
+
+All there come out to be right skewed, so we may need to use log transform to estimate the effect.
+
+#### (a) What is wrong with Bob's ROI Calculation?
+Bob's calculation is wrong because it assumes that people who visited using the sponsored ad would not have visited if not for the sponsored ad.  
+As correctly pointed by Maya, there will be some customers that would scroll to Bazaar link without sponsored ad present, as they searched for the 'Bazaar' keyword in the first place, showing their interest in the website. The contribution of these customers is overestimating the ROI.
+
+#### (b) Define the Treatment and Control
+- B1. What is the unit of observation? Traffic on a Company and Week level
+- B2. what is the treatment? Treatment is actually not getting sponsored advertisements
+- B3. What are the units being treated? Google: week 10-12
+- B4. Which are being controlled? 
+    Google: week 1-9, Yahoo: week 1-12, Bing: week 1-12, Ask: week 1-12
+
+#### (c) Consider a first difference estimate
+We filter the data for Google only to do this analysis
+```{r creating first difference estimate}
+df1 <- data_ad %>% filter(data_ad$platform == 'goog') 
+summary(lm(log(total) ~ after, data = df1))
+```
+- **C1. Estimate  this  value  using  a  regression**: Treatment increases total traffic by ~0.13% points. However, with a p-valueof 0.998, it is statistically not different from zero.
+- **C2. Explain why it would not be a good idea to solely rely on this number as our estimate of the causal effect of the treatment**: We are essentially ignoring any week over week trends in the data by relying on this number solely. In the post-period, We want to know how other websites are behaving. If there are shocks across all websites (e.g. if week 10 was Black Friday/cyber Monday), we want to be able to track the market shocks. We want to see other units are not treated in same time period.
+
+#### (d) Calculate  the  Difference-in-Differences.  
+For this analysis we have to make two assumptions   
+- **SUTVA Assumption** - There are no unmodeled spillovers, that treatment does not affect the control. The treatment (not having sponsored ads on Google), is not changing the behavior of the control group, both sponsored and organic ads, on other websites. People using a search engine on one platform usually only use one platform, so there is no unmodelled spillover, hence no SUTVA Violation.  
+- **Parallel trends assumption**: Without the treatment, treated subjects would have continued in parallel with the control.
+
+```{r parallel trends assumption}
+#regressing total on after and treatment(google)
+summary(lm(total ~ google * factor(week), data = data_ad))
+```
+We see here that none of the p-values of the interaction term are significant - so we can safely proceed with the parallel trends assumption
+```{r, include=FALSE, message=FALSE, warning=FALSE}
+week_ave <- data_ad %>% group_by(week,google) %>% summarise(ave_spons = mean(avg_spons), ave_org = mean(avg_org), ave_tot = mean(total))
+```
+
+```{r, fig.height = 2, fig.width=7}
+tot_plot <- ggplot(week_ave, aes(x = week, y = ave_tot, color = factor(google))) + geom_line(show.legend = FALSE) + geom_vline(xintercept = 9, linetype='dotted') + xlim(1,13) +  theme_bw()
+org_plot <- ggplot(week_ave, aes(x = week, y = ave_org, color = factor(google)), show.legend = FALSE) + geom_line(show.legend = FALSE) + geom_vline(xintercept = 9, linetype='dotted', show.legend = FALSE) + xlim(1,13) +  theme_bw()
+grid.arrange(tot_plot, org_plot, ncol = 2)
+```
+
+The red line shows trends for Google and blue shows for the control group. This provide some visual evidence for parallel trend in control and treatment group.   
+
+We move to running the difference in difference analysis
+```{r difference in differences}
+summary(lm(log(total)~ after*google, data=data_ad))
+#Transforming the interaction coefficient to be able to interpret. 
+(exp(-1.1163)- 1)*100
+```
+- **D1. What  is  the  new  treatment  effect estimate?**: The interaction (after:google) is the effect of the treatment.There is a total click decrease of 67.25%. While this is not statistically significant at the 0.05 level, it does have a p-value of 0.077 indicating some relationship.
+- **D2.How  does  it  compare  with  the  pre-post  estimate, and  what  does  this  say  about  problems with relying on the post estimator?**: 
+  - We found the difference in part (c)  was not statistically significant. However, in this DiD calcuation,  we find that there is a difference, there is a decrease in clicks by 67.25%.
+  - An issue with relying on the post-estimator is that it shows ads visited in the post-period using only Google's information and we aren't seeing the
+other company's information.
+  - Relying on post estimator means we are overlooking the natural trend in 
+data and incorrectly concluding that there is no difference in pre and 
+post period as we did in part (c).
+
+#### (e) Given Your Treatment Effect Estimate, Fix Bob’s RoI Calculation. 
+We see that the decrease in the total clicks in post period for Google from the DiD analysis is 67.25%. We hypothesize that some part of this decrease is going into the organic clicks (as Maya's hunch) and the rest is going into external factors eg., to competitors. 
+
+In this natural experiment we can estimate the part of the decrease that went into the organic ad clicks - inherently estimating the proportion of customers who would organically click on Bazaar links in absence of sponsored ads.
+
+```{r}
+summary(lm(log(avg_org) ~ after*google, data=data_ad))
+(exp(0.2284)-1)*100
+```
+Lets look at this in terms of actual click numbers, as the percentage we shall not be able to subtract the increase in organic ad clicks from sponsored ad clicks
+```{r}
+summary(lm(total~after*google, data=data_ad))
+summary(lm(avg_org~after*google, data=data_ad))
+```
+Here, We observe the following two things:
+
+- In absence of sponsored ads, the total clicks go down by 9910. These should ideally constitute the decrease in sponsored ad clicks along with decrease in organic clicks 
+
+- However, When there are no sponsored ads, organic clicks increase by 2293.These are the clicks that Bob is overestimating and attributing to the sponsored ads - when these clicks would have anyway come 'organically'
+
+So, the actual decrease in sponsored ad click is (9910+2293), and the overestimated click count in sponsored ads is 2293. If we remove this overestimated component from the revenue obtained from sponsored ads, we shall be able to fix the ROI calculation
+```{r ROI Calc }
+# $21 is return when a customer makes a purchase
+# 12% probability of customer purchasing once they land on the website
+# 2293 - increase in organic clicks
+# 9910 - total decrease in click - constitutes sponsored ads decrease as well as organic click increase
+# So, revenue and cost per click come out to be 
+revenue = 21 * 0.12 *(1-(2293/(9910+2293)))
+cost = 0.60
+# and the ROI comes out to be
+(revenue - cost)*100/cost
+```
+We observe from the above calculation that the updated ROI is 241%, way lower than Bob's estimate of 320%
